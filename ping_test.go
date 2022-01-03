@@ -59,6 +59,34 @@ func TestProcessPacket(t *testing.T) {
 	AssertTrue(t, shouldBe1 == 1)
 }
 
+func TestTimeoutPacket(t *testing.T) {
+	pinger, err := NewPinger("213.183.45.49")
+	pinger.Timeout = 2 * time.Second
+	AssertNoError(t, err)
+
+	seqs := make([]int, 0)
+	// this function should be called
+	pinger.OnRecv = func(pkt *Packet) {
+		fmt.Printf("%d bytes from %s: icmp_seq=%d time=%v\n",
+			pkt.Nbytes, pkt.IPAddr, pkt.Seq, pkt.Rtt)
+		seqs = append(seqs, pkt.Seq)
+	}
+	pinger.OnTimeout = func(seq int) {
+		fmt.Printf("Request timeout for icmp_seq %v\n", seq)
+	}
+
+	pinger.Count = 100
+	pinger.Run()
+
+	lastSeq := -1
+	for _, seq := range seqs {
+		if seq != lastSeq + 1 {
+			fmt.Printf("seq miss %v\n", seq)
+		}
+		lastSeq = seq
+	}
+}
+
 func TestProcessPacket_IgnoreNonEchoReplies(t *testing.T) {
 	pinger := makeTestPinger()
 	shouldBe0 := 0

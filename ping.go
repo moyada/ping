@@ -95,7 +95,8 @@ func New(addr string) *Pinger {
 		Interval:   time.Second,
 		RecordRtts: true,
 		Size:       timeSliceLength + trackerLength,
-		Timeout:    time.Duration(math.MaxInt64),
+		Timeout:    time.Minute,
+		PacketTimeout: time.Duration(math.MaxInt64),
 
 		addr:              addr,
 		done:              make(chan interface{}),
@@ -106,6 +107,7 @@ func New(addr string) *Pinger {
 		network:           "ip",
 		protocol:          "udp",
 		awaitingSequences: firstSequence,
+		trackerPackets:  make([]InFlightPacket, 0),
 		TTL:               64,
 		logger:            StdLogger{Logger: log.New(log.Writer(), log.Prefix(), log.Flags())},
 	}
@@ -125,6 +127,7 @@ type Pinger struct {
 	// Timeout specifies a timeout before ping exits, regardless of how many
 	// packets have been received.
 	Timeout time.Duration
+	PacketTimeout time.Duration
 
 	// Count tells pinger to stop after sending (and receiving) Count echo
 	// packets. If this option is not specified, pinger will operate until
@@ -167,6 +170,9 @@ type Pinger struct {
 	// OnRecv is called when Pinger receives and processes a packet
 	OnRecv func(*Packet)
 
+	// OnTimeout is called when Pinger missing a packet
+	OnTimeout func(int)
+
 	// OnFinish is called when Pinger exits
 	OnFinish func(*Statistics)
 
@@ -195,6 +201,8 @@ type Pinger struct {
 	ipv4     bool
 	id       int
 	sequence int
+	// trackerPackets is used to keep track of sequence for the purposes
+	trackerPackets []InFlightPacket
 	// awaitingSequences are in-flight sequence numbers we keep track of to help remove duplicate receipts
 	awaitingSequences map[uuid.UUID]map[int]struct{}
 	// network is one of "ip", "ip4", or "ip6".
@@ -273,6 +281,11 @@ type Statistics struct {
 	// StdDevRtt is the standard deviation of the round-trip times sent via
 	// this pinger.
 	StdDevRtt time.Duration
+}
+
+type InFlightPacket struct {
+	Seq int
+	DispatchedTime time.Time
 }
 
 func (p *Pinger) updateStatistics(pkt *Packet) {
@@ -459,12 +472,12 @@ func (p *Pinger) runLoop(
 		logger = NoopLogger{}
 	}
 
-	timeout := time.NewTicker(p.Timeout)
+	//timeout := time.NewTicker(p.Timeout)
 	interval := time.NewTicker(p.Interval)
 	defer func() {
 		p.Stop()
 		interval.Stop()
-		timeout.Stop()
+		//timeout.Stop()
 	}()
 
 	if err := p.sendICMP(conn); err != nil {
@@ -476,8 +489,8 @@ func (p *Pinger) runLoop(
 		case <-p.done:
 			return nil
 
-		case <-timeout.C:
-			return nil
+		//case <-timeout.C:
+			//return nil
 
 		case r := <-recvCh:
 			err := p.processPacket(r)
@@ -491,6 +504,7 @@ func (p *Pinger) runLoop(
 				interval.Stop()
 				continue
 			}
+			p.checkTimeout()
 			err := p.sendICMP(conn)
 			if err != nil {
 				// FIXME: this logs as FATAL but continues
@@ -568,6 +582,23 @@ func newExpBackoff(baseDelay time.Duration, maxExp int64) expBackoff {
 	return expBackoff{baseDelay: baseDelay, maxExp: maxExp}
 }
 
+func (p *Pinger) checkTimeout() {
+	if len(p.trackerPackets) == 0 {
+		return
+	}
+
+	firstSeq := p.trackerPackets[0]
+	if firstSeq.DispatchedTime.Add(p.Timeout).Before(time.Now()) {
+		return
+	}
+
+	p.trackerPackets = p.trackerPackets[1:]
+
+	if p.OnTimeout != nil {
+		p.OnTimeout(firstSeq.Seq)
+	}
+}
+
 func (p *Pinger) recvICMP(
 	conn packetConn,
 	recv chan<- *packet,
@@ -630,6 +661,8 @@ func (p *Pinger) getCurrentTrackerUUID() uuid.UUID {
 }
 
 func (p *Pinger) processPacket(recv *packet) error {
+	p.trackerPackets = p.trackerPackets[1:]
+
 	receivedAt := time.Now()
 	var proto int
 	if p.ipv4 {
@@ -755,6 +788,7 @@ func (p *Pinger) sendICMP(conn packetConn) error {
 		}
 		// mark this sequence as in-flight
 		p.awaitingSequences[currentUUID][p.sequence] = struct{}{}
+		p.trackerPackets = append(p.trackerPackets, InFlightPacket{Seq: p.sequence, DispatchedTime: time.Now()})
 		p.PacketsSent++
 		p.sequence++
 		if p.sequence > 65535 {
