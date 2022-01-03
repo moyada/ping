@@ -145,6 +145,9 @@ type Pinger struct {
 	// Number of packets received
 	PacketsRecv int
 
+	// Number of packets timeout
+	PacketsTimeout int
+
 	// Number of duplicate packets received
 	PacketsRecvDuplicates int
 
@@ -255,6 +258,9 @@ type Statistics struct {
 
 	// PacketsSent is the number of packets sent.
 	PacketsSent int
+
+	// PacketsTimeout is the number of packets timeout.
+	PacketsTimeout int
 
 	// PacketsRecvDuplicates is the number of duplicate responses there were to a sent packet.
 	PacketsRecvDuplicates int
@@ -555,6 +561,7 @@ func (p *Pinger) Statistics() *Statistics {
 	s := Statistics{
 		PacketsSent:           sent,
 		PacketsRecv:           p.PacketsRecv,
+		PacketsTimeout:        p.PacketsTimeout,
 		PacketsRecvDuplicates: p.PacketsRecvDuplicates,
 		PacketLoss:            loss,
 		Rtts:                  p.rtts,
@@ -591,17 +598,23 @@ func (p *Pinger) checkTimeout(now *time.Time) {
 		return
 	}
 
-
 	for _, packets := range p.trackerPackets {
 		for seq, timeout := range packets {
 			if now.After(timeout) {
 				delete(packets, seq)
 				if p.OnTimeout != nil {
 					p.OnTimeout(seq)
+					p.increaseTimeout()
 				}
 			}
 		}
 	}
+}
+
+func (p *Pinger) increaseTimeout() {
+	p.statsMu.Lock()
+	defer p.statsMu.Unlock()
+	p.Statistics().PacketsTimeout++
 }
 
 func (p *Pinger) recvICMP(
