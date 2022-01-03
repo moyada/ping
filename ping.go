@@ -90,7 +90,7 @@ func New(addr string) *Pinger {
 	firstUUID := uuid.New()
 	var firstSequence = map[uuid.UUID]map[int]struct{}{}
 	firstSequence[firstUUID] = make(map[int]struct{})
-	return &Pinger{
+	pinger := &Pinger{
 		Count:      -1,
 		Interval:   time.Second,
 		RecordRtts: true,
@@ -107,10 +107,12 @@ func New(addr string) *Pinger {
 		network:           "ip",
 		protocol:          "udp",
 		awaitingSequences: firstSequence,
-		trackerPackets:    make(map[int]time.Time),
+		trackerPackets:    make(map[uuid.UUID]map[int]time.Time),
 		TTL:               64,
 		logger:            StdLogger{Logger: log.New(log.Writer(), log.Prefix(), log.Flags())},
 	}
+	pinger.trackerPackets[firstUUID] = make(map[int]time.Time)
+	return pinger
 }
 
 // NewPinger returns a new Pinger and resolves the address.
@@ -202,7 +204,7 @@ type Pinger struct {
 	id       int
 	sequence int
 	// trackerPackets is used to keep track of sequence for the purposes
-	trackerPackets map[int]time.Time
+	trackerPackets map[uuid.UUID]map[int]time.Time
 	// awaitingSequences are in-flight sequence numbers we keep track of to help remove duplicate receipts
 	awaitingSequences map[uuid.UUID]map[int]struct{}
 	// network is one of "ip", "ip4", or "ip6".
@@ -589,11 +591,14 @@ func (p *Pinger) checkTimeout(now *time.Time) {
 		return
 	}
 
-	for seq, timeout := range p.trackerPackets {
-		if now.After(timeout) {
-			delete(p.trackerPackets, seq)
-			if p.OnTimeout != nil {
-				p.OnTimeout(seq)
+
+	for _, packets := range p.trackerPackets {
+		for seq, timeout := range packets {
+			if now.After(timeout) {
+				delete(packets, seq)
+				if p.OnTimeout != nil {
+					p.OnTimeout(seq)
+				}
 			}
 		}
 	}
@@ -716,7 +721,7 @@ func (p *Pinger) processPacket(recv *packet) error {
 			return nil
 		}
 		// remove it from the list of sequences we're waiting for so we don't get duplicates.
-		delete(p.trackerPackets, pkt.Seq)
+		delete(p.trackerPackets[*pktUUID], pkt.Seq)
 		delete(p.awaitingSequences[*pktUUID], pkt.Seq)
 		p.updateStatistics(inPkt)
 	default:
@@ -787,13 +792,14 @@ func (p *Pinger) sendICMP(conn packetConn, now *time.Time) error {
 		}
 		// mark this sequence as in-flight
 		p.awaitingSequences[currentUUID][p.sequence] = struct{}{}
-		p.trackerPackets[p.sequence] = now.Add(p.PacketTimeout)
+		p.trackerPackets[currentUUID][p.sequence] = now.Add(p.PacketTimeout)
 		p.PacketsSent++
 		p.sequence++
 		if p.sequence > 65535 {
 			newUUID := uuid.New()
 			p.trackerUUIDs = append(p.trackerUUIDs, newUUID)
 			p.awaitingSequences[newUUID] = make(map[int]struct{})
+			p.trackerPackets[newUUID] = make(map[int]time.Time)
 			p.sequence = 0
 		}
 		break
