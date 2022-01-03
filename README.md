@@ -47,6 +47,10 @@ pinger.OnDuplicateRecv = func(pkt *ping.Packet) {
 		pkt.Nbytes, pkt.IPAddr, pkt.Seq, pkt.Rtt, pkt.Ttl)
 }
 
+pinger.OnTimeout = func(seq int) {
+	fmt.Printf("Request timeout for icmp_seq %v\n", seq)
+}
+
 pinger.OnFinish = func(stats *ping.Statistics) {
 	fmt.Printf("\n--- %s ping statistics ---\n", stats.Addr)
 	fmt.Printf("%d packets transmitted, %d packets received, %v%% packet loss\n",
@@ -122,8 +126,8 @@ x/net/ipv4 and x/net/ipv6 packages.
 
 ### Plan 9 from Bell Labs
 
-There is no support for Plan 9. This is because the entire `x/net/ipv4` 
-and `x/net/ipv6` packages are not implemented by the Go programming 
+There is no support for Plan 9. This is because the entire `x/net/ipv4`
+and `x/net/ipv6` packages are not implemented by the Go programming
 language.
 
 ## Maintainers and Getting Help:
